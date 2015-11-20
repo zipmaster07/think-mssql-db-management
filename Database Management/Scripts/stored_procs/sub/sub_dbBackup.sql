@@ -19,17 +19,20 @@ IF EXISTS (SELECT 1 FROM sys.procedures WHERE name = 'sub_backupDatabase')
 GO
 
 CREATE PROCEDURE [dbo].[sub_backupDatabase](
-	@backupDbName		nvarchar(128)		--Required:	The name of the database that is going to be backed up.
-	,@backupType		nvarchar(4)			--Required:	The backup type to take (full, differential, transaction log).
-	,@method			varchar(16)			--Required:	The driver to use to backup the database (native MSSQL or Litespeed).
-	,@client			nvarchar(128)		--Required:	The client that this backup belongs to.  Although @client is required it can be set to NULL.
-	,@user				nvarchar(64)		--Required:	The user that is performing the backup (a.k.a. who is running the script).
-	,@backupThkVersion	nvarchar(32)		--Required:	The THINK Enterprise version of the database being backed up.
-	,@backupDbType		char(1)				--Required:	The purpose of the database being backup up (production, testing, conversion, staging, QA, dev, etc).
-	,@cleanStatus		char(5)				--Required:	Indicates if the backup has been sanatized of PCI sensitive data.
-	,@probNbr			nvarchar(16) = null	--Optional:	A Customer First problem number that this backup is associated to.  This is used as part of the actual filename.
-	,@backupRetention	int					--Required:	How long the backup should be kept.  0 indicates it should be kept indefinitely.
-	,@backupDebug		nchar(1) = 'n'		--Optional: When set, returns additional debugging information to diagnose errors.
+	@backupDbName		nvarchar(128)			--Required:	The name of the database that is going to be backed up.
+	,@backupPath		nvarchar(1024)			--Optional:	The path where the backup file will be kept, this does not include the filename.  Pulled from the meta database. If not specified by the calling usp then the default location is used.
+	,@backupType		nvarchar(4)				--Required:	The backup type to take (full, differential, transaction log).
+	,@method			varchar(16)				--Required:	The driver to use to backup the database (native MSSQL or Litespeed).
+	,@client			nvarchar(128)			--Required:	The client that this backup belongs to.  Although @client is required it can be set to NULL.
+	,@user				nvarchar(64)			--Required:	The user that is performing the backup (a.k.a. who is running the script).
+	,@backupThkVersion	nvarchar(32) = null		--Optional:	The THINK Enterprise version of the database being backed up.
+	,@backupDbType		char(1)					--Required:	The purpose of the database being backup up (production, testing, conversion, staging, QA, dev, etc).
+	,@cleanStatus		char(5)					--Required:	Indicates if the backup has been sanatized of PCI sensitive data.
+	,@probNbr			nvarchar(16) = null		--Optional:	A Customer First problem number that this backup is associated to.  This is used as part of the actual filename.
+	,@backupRetention	int						--Required:	How long the backup should be kept.  0 indicates it should be kept indefinitely.
+	,@mediaSet			nvarchar(128) = null	--Optional:	If specified then the sp will look for a backup with that media set and append to the backup file.
+	,@newMediaFamily	bit = 1					--Optional:	Designates if the media set provided (if any) is part of a new media set or an existing one: 0 - existing media set, 1 - new media set).
+	,@backupDebug		nchar(1) = 'n'			--Optional: When set, returns additional debugging information to diagnose errors.
 )
 AS
 
@@ -44,10 +47,13 @@ DECLARE @fileext			nvarchar(16)	--The file extension that the backup should have
 		,@backupCommand		nvarchar(4000)	--The entire backup statement.  This is pieced together from other variables.
 		,@threshold			decimal(18,1)	--The size (in GB) when another backup file should be created.
 		,@result			int				--Used to store the results of the backup operation.
-		,@backupPath		nvarchar(1024)	--The path where the backup file will be kept, this does not include the filename.  Pulled from the meta database.
 		,@fileCount			tinyint			--The total number of backup files that will be created for the database.
 		,@debug				char(1) = 'n'	--Turn on debugging.
 		,@auditBackupType	char(1)			--Specifies what should be audited and logged during this backup.
+		,@backupLocation	nvarchar(16)	--Stores the backupPath that is passed to this sp so that it can be referenced later.
+		,@mediaSetId		int = null		--msdb.dbo.backupmediafamily.media_set_id.
+		,@physicalDevice	nvarchar(512)	--If the media set is provided then we do not need to find the backup path and construct the backup file name. This stores the existing backup file name (and path) from the media set.
+		,@backupName		nvarchar(128)	--Backup set name. This determined dynamically. Uses the database name, type, and date
 		,@stmt				nvarchar(4000)
 		,@printMessage		nvarchar(4000)
 		,@errorMessage		varchar(max)
@@ -69,21 +75,74 @@ BEGIN
 	SET @backupDbType = UPPER(@backupDbType);
 	SET @cleanStatus = LOWER(@cleanStatus);
 
+	--SET @backupName = ''; Set the backup name to the name of the database, database type, and current date.
+
+	SET @backupLocation = @backupPath;
+
+	IF ISNUMERIC(@mediaSet + '.0e0') = 1 --We add the ".0e0" to ensure that the number provided is an integer. We don't care about float, decimal, money, or exponentional types.
+		SET @mediaSetId = CONVERT(int, @mediaSet);
+
+	IF @newMediaFamily = 0
+	BEGIN
+
+		IF @mediaSetId is null AND @mediaSet is not null
+				SET @physicalDevice = (SELECT TOP(1) bmf.physical_device_name FROM msdb..backupmediafamily bmf INNER JOIN msdb..backupmediaset bms ON bms.media_set_id = bmf.media_set_id WHERE bms.name = @mediaSet ORDER BY bmf.media_set_id DESC)
+			ELSE IF @mediaSetId is not null
+				SET @physicalDevice = (SELECT physical_device_name FROM msdb..backupmediafamily WHERE media_set_id = @mediaSetId)
+	END;
+
 	IF @probNbr is null
 		SET @probNbr = '00000'; --If no problem number is provided than set it to a string of zeros.
 	
 	RAISERROR('Starting database backup:', 10, 1) WITH NOWAIT;
 
-	SET @backupPath = COALESCE(@backupPath, (SELECT p_value FROM dbo.params WHERE p_key = 'DefaultBackupDirectory')); --Pull the backup directory from the meta database.
+	IF (@backupPath is null OR @backupPath = 'default') --Pull the backup directory from the meta database.
+	BEGIN
 
-	IF @backupPath is null
-	   RAISERROR('The @backupPath parameter has not been specified and the DefaultBackupDirectory parameter has not been found in dbAdmin.dbo.params.', 16, 1) WITH LOG;
+		SET @backupPath = (SELECT p_value FROM dbo.params WHERE p_key = 'DefaultBackupDirectory');
+
+		IF @backupPath is null
+			RAISERROR('The @backupPath parameter has not been specified and the DefaultBackupDirectory parameter has not been found in dbAdmin.dbo.params.', 16, 1) WITH LOG;
+	END;
+	ELSE IF (@backupPath = 'customer first')
+	BEGIN
+
+		SET @backupPath = (SELECT p_value FROM dbo.params WHERE p_key = 'CustomerFirstBackupDirectory');
+
+		IF @backupPath is null
+			RAISERROR('The @backupPath parameter has not been specified and the CustomerFirstBackupDirectory parameter has not been found in dbAdmin.dbo.params.', 16, 1) WITH LOG;
+	END;
+	ELSE IF (@backupPath = 'db changes')
+	BEGIN
+
+		SET @backupPath = (SELECT p_value FROM dbo.params WHERE p_key = 'DBChangesBackupDirectory');
+
+		IF @backupPath is null
+			RAISERROR('The @backupPath parameter has not been specified and the DBChangesBackupDirectory parameter has not been found in dbAdmin.dbo.params.', 16, 1) WITH LOG;
+	END;
 
 	SET @printMessage = '	Using backup path at: ' + @backupPath;
 	RAISERROR(@printMessage, 10, 1) WITH NOWAIT;
 
 	IF (RIGHT(@backupPath, 1) <> '\')
 		SET @backupPath = @backupPath + '\'; --Append a backslash to the backup path if it does not already exists
+
+	/*
+	**	Removing separate folders for different backup types. Now backing up to one file and dividing files by media family.
+	IF @backupLocation in ('customer first', 'db changes')
+	BEGIN
+
+		SET @backupPath = 
+			CASE @backupType
+				WHEN 'full'
+					THEN @backupPath + 'FULL\'
+				WHEN 'diff'
+					THEN @backupPath + 'DIFF\'
+				WHEN 'log'
+					THEN @backupPath + 'LOG\'
+			END;
+	END;
+	*/
 
 	IF @backupDbName in ('master', 'model', 'msdb')
 		SET @method = 'native'; --If backing up a system database than always create a native MSSQL backup.
@@ -149,7 +208,9 @@ BEGIN
 		RAISERROR(@printMessage, 10, 1) WITH NOWAIT;
 
 		SET @auditBackupType = SUBSTRING(@backupType, 1, 1);
-		EXEC dbo.sub_auditTrail @auditDbName = @backupDbName, @operationType = 1, @backupType = @auditBackupType
+		EXEC dbo.sub_auditTrail @auditDbName = @backupDbName
+			,@operationType = 1
+			,@backupType = @auditBackupType
 
 		/*
 		**	For each file to create, build the backup filename and backup statement.
@@ -166,7 +227,10 @@ BEGIN
 			/*
 			**	This is the actual filename (including the backup directory).  It is pieced together from other variables.
 			*/
-			SET @filepath = @backupPath + LOWER(@client) + '_' + LOWER(@user) + '_' + @datestamp + '_' + @timestamp + '_' + @backupThkVersion + '_' + UPPER(@backupDbType) + '_' + LOWER(@cleanStatus) + '_' + @probNbr + @countMessage + @fileext;
+			IF @backupThkVersion is not null --The database being backed up is a THINK Enterprise database. Include the version number for convenience
+				SET @filepath = @backupPath + LOWER(@client) + '_' + LOWER(@user) + '_' + @datestamp + '_' + @timestamp + '_' + @backupThkVersion + '_' + UPPER(@backupDbType) + '_' + LOWER(@cleanStatus) + '_' + @probNbr + @countMessage + @fileext;
+			ELSE --The database being backed up is not a THINK Enterprise database.
+				SET @filepath = @backupPath + LOWER(@client) + '_' + LOWER(@user) + '_' + @datestamp + '_' + @timestamp + '_' + UPPER(@backupDbType) + '_' + @backupType + @countMessage + @fileext;
 
 			/*
 			**	Creates the first part of the backup statement depending on how the database is supposed to be backed up.
@@ -191,7 +255,10 @@ BEGIN
 			SET @printMessage = '	Recording backup file information for backup file number: ' + CAST(@count AS varchar(16))
 			RAISERROR(@printMessage, 10, 1) WITH NOWAIT;
 
-			EXEC dbo.sub_auditTrail @auditDbName = @backupDbName, @operationFile = @filepath, @operationType = 3, @backupCounter = @count; --Record the backup settings for audit purposes.
+			EXEC dbo.sub_auditTrail @auditDbName = @backupDbName --Record the backup settings for audit purposes.
+				,@operationFile = @filepath
+				,@operationType = 3
+				,@backupCounter = @count;
 	   
 			SELECT @errorNumber = @@error; --This is the old way of detecting errors, you should now use a TRY...CATCH block.
 				
@@ -230,12 +297,16 @@ BEGIN
 				WHEN @backupType = N'log'
 					THEN 'BACKUP LOG ' + QUOTENAME(@backupDbName)
 			END;
-		SET @backupFileStmt = @backupFileStmt + CHAR(10) +
+		IF @newMediaFamily = 0
+		BEGIN
+
+			SET @backupFileStmt = @backupFileStmt + CHAR(10) +
 									CASE
 										WHEN @backupType = N'diff'
-											THEN 'WITH DIFFERENTIAL, CHECKSUM'
-										ELSE 'WITH CHECKSUM, STATS = 5'
+											THEN 'WITH DIFFERENTIAL, COMPRESSION, CHECKSUM'
+										ELSE 'WITH NAME = N''' + @backupName + '''NOFORMAT, NOINIT, COMPRESSION, CHECKSUM, STATS = 5'
 									END;
+		END;
 	END;
 
 	/*
