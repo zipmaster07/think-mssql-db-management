@@ -266,7 +266,8 @@ BEGIN
 			EXEC dbo.sub_auditTrail @auditDbName = @backupDbName --Record the backup settings for audit purposes.
 				,@operationFile = @filepath
 				,@operationType = 3
-				,@backupCounter = @count;
+				,@backupCounter = @count
+				,@newMediaSet = @newMediaFamily;
 	   
 			SELECT @errorNumber = @@error; --This is the old way of detecting errors, you should now use a TRY...CATCH block.
 				
