@@ -18,6 +18,7 @@ CREATE PROCEDURE [dbo].[sub_auditTrail](
 	,@operationType		tinyint					--Required:	The type of operation being audited: 0 = Restore, 1 = Inital backup entry, 2 = Full backup update, 3 = Record specific backup filename info.
 	,@backupType		char(1) = null			--Optional:	The type of backup that was taken: f = Full, d = Diff, l = Log.
 	,@backupCounter		tinyint = null			--Optional:	The backup number in multi-file backups.
+	,@newMediaSet		tinyint = 1				--Optional: Indicates if the backup is part of an existing media set or a new media set.
 	,@auditCleanStatus	char(5) = null			--Optional:	Indicates if the database/backup file has been sanatized of PCI sensitive data.
 	,@auditUserName		sysname = null			--Optional:	Name of the user that restored/backed up the database.
 	,@auditThkVersion	nvarchar(16) = null		--Optional:	The version of the database being restored or backed up.
@@ -154,8 +155,8 @@ BEGIN TRY
 			/*
 			**	Records the file number (as part of a multi-file backup), filename, and if the file still exists on the database server
 			*/
-			INSERT INTO dbo.backup_history_file(backup_id, file_number, filename, deleted)
-				VALUES(@backupId, @backupCounter, @operationFile, 'n');
+			INSERT INTO dbo.backup_history_file(backup_id, file_number, filename, deleted, new_media)
+				VALUES(@backupId, @backupCounter, @operationFile, 'n', @newMediaSet);
 		END;
 		ELSE
 			RAISERROR('Unable to determine operation type for audit logging, information auditing has stopped', 16, 1) WITH LOG;

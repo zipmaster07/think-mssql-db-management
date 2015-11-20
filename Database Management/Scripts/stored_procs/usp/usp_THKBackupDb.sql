@@ -96,6 +96,8 @@ BEGIN TRY
 					RAISERROR('The media name you provided does not exist, creating new media set', 10, 1) WITH NOWAIT;
 					SET @newMediaFamily = 1
 				END;
+				ELSE
+					RAISERROR('The media name you provided exists, appending to existing media set', 10, 1) WITH NOWAIT;
 			END;
 		END;
 	END;

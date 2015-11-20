@@ -75,8 +75,7 @@ BEGIN
 	SET @backupDbType = UPPER(@backupDbType);
 	SET @cleanStatus = LOWER(@cleanStatus);
 
-	--SET @backupName = ''; Set the backup name to the name of the database, database type, and current date.
-
+	SET @backupName = LOWER(@backupDbName) + ' ' + LOWER(@backupType) + ' db backup ' + CONVERT(varchar(8), GETDATE(), 112) + '_' + CONVERT(varchar(8), GETDATE(), 8); --Set the backup name to the name of the database, database type, and current date.
 	SET @backupLocation = @backupPath;
 
 	IF ISNUMERIC(@mediaSet + '.0e0') = 1 --We add the ".0e0" to ensure that the number provided is an integer. We don't care about float, decimal, money, or exponentional types.
@@ -94,7 +93,8 @@ BEGIN
 	IF @probNbr is null
 		SET @probNbr = '00000'; --If no problem number is provided than set it to a string of zeros.
 	
-	RAISERROR('Starting database backup:', 10, 1) WITH NOWAIT;
+	SET @printMessage = char(13) + char(10) + 'Starting database backup:'
+	RAISERROR(@printMessage, 10, 1) WITH NOWAIT;
 
 	IF (@backupPath is null OR @backupPath = 'default') --Pull the backup directory from the meta database.
 	BEGIN
@@ -225,12 +225,20 @@ BEGIN
 				SET @countMessage = N'_' + cast(@count AS NVARCHAR(3)) + N'_of_' + CAST(@fileCount AS NVARCHAR(3) ); --For all others.
 
 			/*
-			**	This is the actual filename (including the backup directory).  It is pieced together from other variables.
+			**	This is the actual filename (including the backup directory).  If an existing media set was provided then the filepath is pulled
+			**	from the msdb database and stored in the physicalDevice variable then passed to filepath. If an existing media set is not provided
+			**	then the filepath is pieced together from other variables.
 			*/
-			IF @backupThkVersion is not null --The database being backed up is a THINK Enterprise database. Include the version number for convenience
-				SET @filepath = @backupPath + LOWER(@client) + '_' + LOWER(@user) + '_' + @datestamp + '_' + @timestamp + '_' + @backupThkVersion + '_' + UPPER(@backupDbType) + '_' + LOWER(@cleanStatus) + '_' + @probNbr + @countMessage + @fileext;
-			ELSE --The database being backed up is not a THINK Enterprise database.
-				SET @filepath = @backupPath + LOWER(@client) + '_' + LOWER(@user) + '_' + @datestamp + '_' + @timestamp + '_' + UPPER(@backupDbType) + '_' + @backupType + @countMessage + @fileext;
+			IF @physicalDevice is null
+			BEGIN
+
+				IF @backupThkVersion is not null --The database being backed up is a THINK Enterprise database. Include the version number for convenience
+					SET @filepath = @backupPath + LOWER(@client) + '_' + LOWER(@user) + '_' + @datestamp + '_' + @timestamp + '_' + @backupThkVersion + '_' + UPPER(@backupDbType) + '_' + LOWER(@cleanStatus) + '_' + @probNbr + @countMessage + @fileext;
+				ELSE --The database being backed up is not a THINK Enterprise database.
+					SET @filepath = @backupPath + LOWER(@client) + '_' + LOWER(@user) + '_' + @datestamp + '_' + @timestamp + '_' + UPPER(@backupDbType) + '_' + @backupType + @countMessage + @fileext;
+			END
+			ELSE
+				SET @filepath = @physicalDevice
 
 			/*
 			**	Creates the first part of the backup statement depending on how the database is supposed to be backed up.
@@ -284,7 +292,7 @@ BEGIN
 	RAISERROR(@printMessage, 10, 1) WITH NOWAIT;
 
 	/*
-	**	Finish creating the backup statement for native backups.
+	**	Continue creating the backup statement for native backups.
 	*/
 	IF @method = 'native' 
 	BEGIN
@@ -297,36 +305,62 @@ BEGIN
 				WHEN @backupType = N'log'
 					THEN 'BACKUP LOG ' + QUOTENAME(@backupDbName)
 			END;
-		IF @newMediaFamily = 0
-		BEGIN
-
-			SET @backupFileStmt = @backupFileStmt + CHAR(10) +
+		SET @backupFileStmt = @backupFileStmt + CHAR(10) +
 									CASE
 										WHEN @backupType = N'diff'
-											THEN 'WITH DIFFERENTIAL, COMPRESSION, CHECKSUM'
-										ELSE 'WITH NAME = N''' + @backupName + '''NOFORMAT, NOINIT, COMPRESSION, CHECKSUM, STATS = 5'
+											THEN 'WITH DIFFERENTIAL, NAME = N''' + @backupName + ''', COMPRESSION, CHECKSUM'
+										ELSE 'WITH NAME = N''' + @backupName + ''', COMPRESSION, CHECKSUM, STATS = 5'
 									END;
-		END;
 	END;
 
 	/*
-	**	Finish creating the backup statement for Litespeed backups.
+	**	Continue creating the backup statement for Litespeed backups.
 	*/
 	IF @method = 'litespeed' 
 	BEGIN
 		IF (@backupType <> N'log')
 			SET @backupStmt = 'declare @result int;exec @result = [master].[dbo].[xp_backup_database]' + CHAR(10) +
-								' @database = ' + QUOTENAME(@backupDbName);             
+								' @database = ' + QUOTENAME(@backupDbName) + char(10) + 
+								' @backupname = ' + @backupName;
 		ELSE
 			SET @backupStmt = 'declare @result int;exec @result = [master].[dbo].[xp_backup_log]' + CHAR(10) +
-								' @database = ' + QUOTENAME(@backupDbName);
+								' @database = ' + QUOTENAME(@backupDbName) + char(10) +
+								' @backupname = ' + @backupName;
 	
-		SET @backupFileStmt = @backupFileStmt + CHAR( 10 ) + 
-									CASE
-										WHEN @backupType = N'diff'
-											THEN ',@with = ''CHECKSUM, DIFFERENTIAL''' 
-										ELSE ',@with = ''CHECKSUM'''
-									END + CHAR(10) + ';' + CHAR(10) + 'INSERT INTO #XpResult VALUES( @result, @@error )';
+		SET @backupFileStmt = @backupFileStmt + char(10) + 
+								CASE
+									WHEN @backupType = N'diff'
+										THEN ',@with = ''CHECKSUM, DIFFERENTIAL''' 
+									ELSE ',@with = ''CHECKSUM'''
+								END;
+	END;
+
+	/*
+	**	Finish creating the backup statement for native backups. If the backup is part of an existing media then add to the current media set otherwise create a new
+	**	media set.
+	*/
+	IF @method = 'native'
+	BEGIN
+
+		IF @newMediaFamily = 0
+			SET @backupFileStmt = @backupFileStmt +	',NOFORMAT, NOINIT'
+		ELSE
+			SET @backupFileStmt = @backupFileStmt + ',FORMAT, INIT, MEDIANAME = N''' + @mediaSet + ''''
+	END;
+
+	/*
+	**	Finish creating the backup statement for litespeed backups. If the backup is part of an existing media then add to the current media set otherwise create a new
+	**	media set.
+	*/
+	IF @method = 'litespeed'
+	BEGIN
+
+		IF @newMediaFamily = 0
+			SET @backupFileStmt = @backupFileStmt + char(13) + char(10) +
+									',@init = 0' + char(10) + ';' + char(10) + 'INSERT INTO #XpResult VALUES( @result, @@error )'
+		ELSE
+			SET @backupFileStmt = @backupFileStmt + char(13) + char(10) +
+									',@init = 1' + char(10) + ';' + char(10) + 'INSERT INTO #XpResult VALUES( @result, @@error )'
 	END;
 
 	/*
