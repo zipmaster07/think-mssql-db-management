@@ -25,6 +25,7 @@ CREATE PROCEDURE [dbo].[usp_THKBackupDB](
 	,@setProbNbr			nvarchar(16) = null			--Optional:		Used to associate a specific problem number to a backup.
 	,@setBackupRetention	int = null					--Optional:		How long the backup will/should be kept before being deleted.
 	,@accessMediaSet		nvarchar(128) = null		--Optional:		If specified the system will look for a backup with the media set specified. If one is found then it will use the existing media set.
+	,@createNewMediaFamily	char(1) = null				--Optional:		This parameter is only used when the user specifies an existing media set, but wants to create a new media family: 0 - Do not create new media family, 1 - create new media family.
 	,@userOverride			nvarchar(32) = null			--Undocumented:	Used to set the user of who the backup is associated with, otherwise the user calling the sp is used.
 	,@cleanStatusOverride	char(5) = 'clean'			--Undocumented:	Indicates if the database is clean or dirty.  the sp assumes the database is clean unless otherwise explicity set to dirty.
 ) WITH EXECUTE AS OWNER
@@ -35,6 +36,7 @@ DECLARE @thkVersion			nvarchar(32)			--The THINK Enterprise version that the dat
 		,@backupStopTime	datetime				--Datetime of when the backup has ended.
 		,@mediaSetId		int = null				--msdb.dbo.backupmediafamily.media_set_id.
 		,@newMediaFamily	bit = 1					--Designates if the media set provided (if any) is part of a new media set or an existing one: 0 - existing media set, 1 - new media set).
+		,@litespeedFilePath	nvarchar(512)			--The path to the litespeed backup file specified in the accessMediaSet. This is used to construct a valid path to that file.
 		,@sql				nvarchar(4000)
 		,@printMessage		nvarchar(4000)
 		,@errorMsg			nvarchar(4000)
@@ -68,6 +70,9 @@ BEGIN TRY
 		IF @setBackupPath not in (NULL, 'default', 'customer first', 'db changes')
 			RAISERROR('Value for parameter @setBackupPath must be "default", "customer first", "db changes", or must not be specified.', 16, 1) WITH LOG;
 
+		IF @createNewMediaFamily not in ('n', 'y')
+			RAISERROR('Value for parameter @createNewMediaFamily must be set to "n" or "y".', 16, 1) WITH LOG;
+
 		IF @setBackupRetention > 999
 		BEGIN
 
@@ -75,6 +80,15 @@ BEGIN TRY
 			SET @setBackupRetention = 999
 		END;
 
+		/*
+		**	This entire block details with verifying, setting up, and configuring media family settings for the backup. It deals with both native and litespeed backups.
+		**	However, the two types of backups differ. Litespeed does not have a concept of a media name. To append to a media family you simply restore to the same .sls
+		**	backup, while setting @init = 0. If setBackupType is set to "litespeed" then the name of the backup file should be provided. The system will then check if
+		**	it can restore the header of that file.
+		**	
+		**	If the media family provided is for a native backup then the system simply uses the msdb..backupmediafamily and msdb..backupmediaset tables to determine if
+		**	the media set already exists. If it does then it uses the physical_device_name to find the file and append to its media set, unless explicitly told not to.
+		*/
 		IF @accessMediaSet is not null
 		BEGIN
 
@@ -86,18 +100,53 @@ BEGIN TRY
 
 				IF NOT EXISTS (SELECT 1 FROM msdb.dbo.backupmediafamily WHERE media_set_id = @mediaSetId)
 					RAISERROR('The media_set_id you provided is not valid', 16, 1) WITH LOG;
+				ELSE
+					RAISERROR('The media_set_id you provided exists, appending to existing media set', 10, 1) WITH NOWAIT;
 			END
 			ELSE
 			BEGIN
 
-				IF NOT EXISTS (SELECT 1 FROM msdb.dbo.backupmediaset WHERE name = @accessMediaSet)
+				IF (NOT EXISTS (SELECT 1 FROM msdb.dbo.backupmediaset WHERE name = @accessMediaSet)) AND @setBackupMethod = 'native'
 				BEGIN
 
 					RAISERROR('The media name you provided does not exist, creating new media set', 10, 1) WITH NOWAIT;
 					SET @newMediaFamily = 1
-				END;
+				END
+				ELSE IF @setBackupMethod = 'litespeed'
+				BEGIN
+					/*
+					**	Grab some preliminary data used to find the filename and restore its header.
+					*/
+					SET @litespeedFilePath =
+						CASE @setBackupPath
+							WHEN NULL
+								THEN (SELECT p_value FROM [dbAdmin].[dbo].[params] WHERE p_key = 'DefaultBackupDirectory')
+							WHEN 'default'
+								THEN (SELECT p_value FROM [dbAdmin].[dbo].[params] WHERE p_key = 'DefaultBackupDirectory')
+							WHEN 'customer first'
+								THEN (SELECT p_value FROM [dbAdmin].[dbo].[params] WHERE p_key = 'CustomerFirstBackupDirectory')
+							WHEN 'db changes'
+								THEN (SELECT p_value FROM [dbAdmin].[dbo].[params] WHERE p_key = 'DBChangesBackupDirectory')
+
+					EXEC @result = master.dbo.xp_restore_headeronly @filename = '\\pronasunifile01\Backups\Dev\customer_first\csm_adm_20151120_1539MST_L_full.sls'
+					IF @result <> 0
+						RAISERROR('Unable to restore litespeed file header', 16, 1) WITH LOG;
+					ELSE
+						RAISERROR('The litespeed header is intact appending to media set', 10, 1) WITH NOWAIT;
+				END
 				ELSE
-					RAISERROR('The media name you provided exists, appending to existing media set', 10, 1) WITH NOWAIT;
+				BEGIN
+
+					IF @createNewMediaFamily = 'y'
+					BEGIN
+
+						SET @printMessage = 'The media name you provided exists, but you specified to create a new media family anyway.' + char(13) + char(10) + 'Not appending to exiting media set'
+						RAISERROR(@printMessage, 10, 1) WITH NOWAIT;
+						SET @newMediaFamily = 1
+					END
+					ELSE
+						RAISERROR('The media name you provided exists, appending to existing media set', 10, 1) WITH NOWAIT;
+				END;
 			END;
 		END;
 	END;

@@ -90,6 +90,13 @@ BEGIN
 				SET @physicalDevice = (SELECT physical_device_name FROM msdb..backupmediafamily WHERE media_set_id = @mediaSetId)
 	END;
 
+	IF @mediaSet is null
+	BEGIN
+
+		SET @mediaSet = LOWER(@backupDbName) + ' new media set ' + (SELECT p_value FROM [dbAdmin].[dbo].[params] WHERE p_key = 'tempTableId') --If a media set name was not provided then it is assumed that a new media set is to be created with a default name.
+		RAISERROR('No media set name provided. Creating new media set with default name', 10, 1) WITH NOWAIT;
+	END;
+
 	IF @probNbr is null
 		SET @probNbr = '00000'; --If no problem number is provided than set it to a string of zeros.
 	
@@ -322,11 +329,11 @@ BEGIN
 		IF (@backupType <> N'log')
 			SET @backupStmt = 'declare @result int;exec @result = [master].[dbo].[xp_backup_database]' + CHAR(10) +
 								' @database = ' + QUOTENAME(@backupDbName) + char(10) + 
-								' @backupname = ' + @backupName;
+								' ,@backupname = ''' + @backupName + '''';
 		ELSE
 			SET @backupStmt = 'declare @result int;exec @result = [master].[dbo].[xp_backup_log]' + CHAR(10) +
 								' @database = ' + QUOTENAME(@backupDbName) + char(10) +
-								' @backupname = ' + @backupName;
+								' ,@backupname = ''' + @backupName + '''';
 	
 		SET @backupFileStmt = @backupFileStmt + char(10) + 
 								CASE
