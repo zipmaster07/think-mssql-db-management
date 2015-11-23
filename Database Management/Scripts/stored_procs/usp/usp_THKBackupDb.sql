@@ -37,6 +37,7 @@ DECLARE @thkVersion			nvarchar(32)			--The THINK Enterprise version that the dat
 		,@mediaSetId		int = null				--msdb.dbo.backupmediafamily.media_set_id.
 		,@newMediaFamily	bit = 1					--Designates if the media set provided (if any) is part of a new media set or an existing one: 0 - existing media set, 1 - new media set).
 		,@litespeedFilePath	nvarchar(512)			--The path to the litespeed backup file specified in the accessMediaSet. This is used to construct a valid path to that file.
+		,@result			int						--Stores the result of running the xp_restore_headeronly litespeed extended sp.
 		,@sql				nvarchar(4000)
 		,@printMessage		nvarchar(4000)
 		,@errorMsg			nvarchar(4000)
@@ -81,7 +82,7 @@ BEGIN TRY
 		END;
 
 		/*
-		**	This entire block details with verifying, setting up, and configuring media family settings for the backup. It deals with both native and litespeed backups.
+		**	This entire block deals with verifying, setting up, and configuring media family settings for the backup. It deals with both native and litespeed backups.
 		**	However, the two types of backups differ. Litespeed does not have a concept of a media name. To append to a media family you simply restore to the same .sls
 		**	backup, while setting @init = 0. If setBackupType is set to "litespeed" then the name of the backup file should be provided. The system will then check if
 		**	it can restore the header of that file.
@@ -93,7 +94,7 @@ BEGIN TRY
 		BEGIN
 
 			SET @newMediaFamily = 0 --First assume that the media set exists, then check if it does.
-			IF ISNUMERIC(@accessMediaSet + '.0e0') = 1 --We add the ".0e0" to ensure that the number provided is an integer. We don't care about float, decimal, money, or exponentional types.
+			IF ISNUMERIC(@accessMediaSet + '.0e0') = 1 AND @setBackupMethod = 'native' --We add the ".0e0" to ensure that the number provided is an integer. We don't care about float, decimal, money, or exponentional types.
 			BEGIN
 
 				SET @mediaSetId = CONVERT(int, @accessMediaSet); --If the data provided is a number try it as the media_set_id
@@ -106,7 +107,7 @@ BEGIN TRY
 			ELSE
 			BEGIN
 
-				IF (NOT EXISTS (SELECT 1 FROM msdb.dbo.backupmediaset WHERE name = @accessMediaSet)) AND @setBackupMethod = 'native'
+				IF (NOT EXISTS (SELECT 1 FROM msdb.dbo.backupmediaset WHERE name = @accessMediaSet)) AND @setBackupMethod = 'native' --The media set name could not be found so the system will create a new media set with the name provided.
 				BEGIN
 
 					RAISERROR('The media name you provided does not exist, creating new media set', 10, 1) WITH NOWAIT;
@@ -117,6 +118,9 @@ BEGIN TRY
 					/*
 					**	Grab some preliminary data used to find the filename and restore its header.
 					*/
+					IF RIGHT(@accessMediaSet, 4) != '.sls'
+						SET @accessMediaSet = @accessMediaSet + '.sls';
+
 					SET @litespeedFilePath =
 						CASE @setBackupPath
 							WHEN NULL
@@ -127,10 +131,28 @@ BEGIN TRY
 								THEN (SELECT p_value FROM [dbAdmin].[dbo].[params] WHERE p_key = 'CustomerFirstBackupDirectory')
 							WHEN 'db changes'
 								THEN (SELECT p_value FROM [dbAdmin].[dbo].[params] WHERE p_key = 'DBChangesBackupDirectory')
+						END;
 
-					EXEC @result = master.dbo.xp_restore_headeronly @filename = '\\pronasunifile01\Backups\Dev\customer_first\csm_adm_20151120_1539MST_L_full.sls'
-					IF @result <> 0
+					IF (RIGHT(@litespeedFilePath, 1) <> '\')
+						SET @litespeedFilePath = @litespeedFilePath + '\';
+
+					SET 
+					BEGIN CATCH
+					END CATCH;@accessMediaSet = @litespeedFilePath + @accessMediaSet; --The path and name of the litespeed backup.
+
+					BEGIN TRY
+						EXEC @result = master.dbo.xp_restore_headeronly @filename = @accessMediaSet;
+					END TRY
+
+					IF @result <> 0 AND @createNewMediaFamily in (NULL, 'n')
 						RAISERROR('Unable to restore litespeed file header', 16, 1) WITH LOG;
+					ELSE IF @result = 0 AND @createNewMediaFamily = 'y'
+					BEGIN
+
+						SET @printMessage = 'The media name you provided exists, but you specified to create a new media family anyway.' + char(13) + char(10) + 'Not appending to exiting media set'
+						RAISERROR(@printMessage, 10, 1) WITH NOWAIT;
+						SET @newMediaFamily = 1
+					END
 					ELSE
 						RAISERROR('The litespeed header is intact appending to media set', 10, 1) WITH NOWAIT;
 				END
