@@ -84,10 +84,12 @@ BEGIN
 	IF @newMediaFamily = 0
 	BEGIN
 
-		IF @mediaSetId is null AND @mediaSet is not null
+		IF @mediaSetId is null AND @mediaSet is not null AND @method = 'native' --The media set is the media family name for a native backup.
 				SET @physicalDevice = (SELECT TOP(1) bmf.physical_device_name FROM msdb..backupmediafamily bmf INNER JOIN msdb..backupmediaset bms ON bms.media_set_id = bmf.media_set_id WHERE bms.name = @mediaSet ORDER BY bmf.media_set_id DESC)
-			ELSE IF @mediaSetId is not null
+			ELSE IF @mediaSetId is not null AND @method = 'native' --The media set provided is the media_set_id of the media family for a native backup.
 				SET @physicalDevice = (SELECT physical_device_name FROM msdb..backupmediafamily WHERE media_set_id = @mediaSetId)
+			ELSE IF @mediaSet is not null AND @method = 'litespeed' --The media set is the location of a litespeed backup.
+				SET @physicalDevice = @mediaSet
 	END;
 
 	IF @mediaSet is null
