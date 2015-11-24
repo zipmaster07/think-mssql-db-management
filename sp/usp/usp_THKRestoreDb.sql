@@ -94,7 +94,11 @@ BEGIN TRY
 			RAISERROR('You are attempting to restore a database as "dirty" and a value for parameter @setProbNbr was not set.  Is this restore associated to a particular problem number?', 10, 1) WITH NOWAIT;
 
 		IF (SUBSTRING(@setBackupFile, LEN(@setBackupFile) - 4, 4)) != '.sls' --Finds the extension of the backup file and determines if it is a litespeed backup.  For multi-file backups, you cannot mix different file types (a.k.a. native and litespeed).
-			RAISERROR('Based on the extension of the backup file you provided you are not restoring a litespeed backup. If this is a litespeed backup the restore step will fail.  All litespeed backups must have a ".sls" extension, otherwise we assume you are restoring a native backup', 10, 1) WITH NOWAIT;
+		BEGIN
+
+			SET @printMessage = 'Based on the extension of the backup file you provided you are not restoring a litespeed backup.' + char(13) + char(10) + 'If this is a litespeed backup the restore step will fail.  All litespeed backups must have a ".sls" extension, otherwise we assume you are restoring a native backup'
+			RAISERROR(@printMessage, 10, 1) WITH NOWAIT;
+		END
 
 		IF @setRecovery = 'n'
 		BEGIN
@@ -192,13 +196,20 @@ BEGIN TRY
 		**	Calling the "sub_databasePrincipals" sp here gather SQL user information in a temp table.  This user information is then used in the restored database later.
 		*/
 		IF @setUserRights = 0 --If set to 0 call the "sub_databasePrincipals" sp.  Pass the @setDbName, @setUserRights, and @defintedTempTableId values to the sub sp.
-			EXEC dbo.sub_databasePrincipals @principalDbName = @setDbName, @gatherUsers = @setUserRights, @tempTableId = @definedTempTableId;
+			EXEC dbo.sub_databasePrincipals @principalDbName = @setDbName
+				,@gatherUsers = @setUserRights
+				,@tempTableId = @definedTempTableId;
 
 		IF @restoreBaseline = 1 --If set to 1 call the "sub_restoreBaseline" sp.  Pass the @setBackupFile and @definedTempTableId value to the sub sp.  Unless most sub sp's, the "sub_restoreBaseline" sp returns a value.  It overrides the @setBackupFile parameter with the location of the desired baseline.
-			EXEC dbo.sub_restoreBaseline @restoreVersionPath = @setBackupFile OUTPUT, @tempTableId = @definedTempTableId;
+			EXEC dbo.sub_restoreBaseline @restoreVersionPath = @setBackupFile OUTPUT
+				,@tempTableId = @definedTempTableId;
 
 		SET @restoreStartTime = GETDATE(); --This more accurately represents when the restore sp is called, not when the actual restore started.  The same can be said for the @restoreEndTime parameter
-		EXEC dbo.sub_restoreDatabase @restoreDbName = @setDbName, @backupFile = @setBackupFile, @recovery = @setRecovery, @tempTableId = @definedTempTableId, @restoreDebug = @setDebug;
+		EXEC dbo.sub_restoreDatabase @restoreDbName = @setDbName
+			,@backupFile = @setBackupFile
+			,@recovery = @setRecovery
+			,@tempTableId = @definedTempTableId
+			,@restoreDebug = @setDebug;
 		SET @restoreEndTime = GETDATE();
 
 		IF @setRecovery = 'n' --Used when restoring with "NORECOVERY".  Indicates if the restore was successful and the sp should immediately stop.
@@ -219,34 +230,44 @@ BEGIN TRY
 		BEGIN
 
 			SET @setUserRights = 3 --See the "sub_databasePrincipals" sp for why we immediately change the value of @setUserRights to 3.
-			EXEC dbo.sub_databasePrincipals @principalDbName = @setDbName, @gatherUsers = @setUserRights, @tempTableId = @definedTempTableId; --Call the "sub_databasePrincipals" sp again with the new value.
+			EXEC dbo.sub_databasePrincipals @principalDbName = @setDbName --Call the "sub_databasePrincipals" sp again with the new value.
+				,@gatherUsers = @setUserRights
+				,@tempTableId = @definedTempTableId;
 		END
 		ELSE IF @setUserRights = 1 --Removing all non-THINK related users/stored procedures/tables/views/etc and added a standard template (pulled from the meta database).
 		BEGIN
 
-			EXEC dbo.sub_databasePrincipals @principalDbName = @setDbName, @gatherUsers = @setUserRights, @tempTableId = @definedTempTableId; --If @setUserRights was set to 1 (default) this is the first time the "sub_databasePrincipals" sp is called
+			EXEC dbo.sub_databasePrincipals @principalDbName = @setDbName --If @setUserRights was set to 1 (default) this is the first time the "sub_databasePrincipals" sp is called
+				,@gatherUsers = @setUserRights
+				,@tempTableId = @definedTempTableId;
 			
 			SET @setUserRights = 2 --See the "sub_databasePrincipals" sp for why we immediately change the value of @setUserRights to 2.
-			EXEC dbo.sub_databasePrincipals @principalDbName = @setDbName, @gatherUsers = @setUserRights, @tempTableId = @definedTempTableId;
+			EXEC dbo.sub_databasePrincipals @principalDbName = @setDbName
+				,@gatherUsers = @setUserRights
+				,@tempTableId = @definedTempTableId;
 		END
 		ELSE IF @setUserRights = 2 --Add the standard user template without removing the exsting users/stored procedures/tables/views/etc.
 		BEGIN
 
-			EXEC dbo.sub_databasePrincipals @principalDbName = @setDbName, @gatherUsers = @setUserRights, @tempTableId = @definedTempTableId;
+			EXEC dbo.sub_databasePrincipals @principalDbName = @setDbName
+				,@gatherUsers = @setUserRights
+				,@tempTableId = @definedTempTableId;
 		END;
 
 		/*
 		**	This sub sp grants rights to SQL Users for THINK Enterprise specific stored procedures such as zz_helpdomain, zz_dbver, etc.  It has nothing to do with granting
 		**	rights to this sp or its sub sp's.
 		*/
-		EXEC dbo.sub_grantSpRights @spGrantDbName = @setDbName, @tempTableId = @definedTempTableId;
+		EXEC dbo.sub_grantSpRights @spGrantDbName = @setDbName
+			,@tempTableId = @definedTempTableId;
 
 		/*
 		**	This sub sp checks for any running THINK Enterprise processes in the target database.  Specifically, it checks to see if the Email/Event Queue process is running
 		**	as this can email real people even in test databases.  if it is running then it stops the process.  It should be noted that is does stop processes forcefully and
 		**	does not attempt any graceful shutdowns.
 		*/
-		EXEC dbo.sub_checkProcesses @processDbName = @setDbName, @tempTableId = @definedTempTableId;
+		EXEC dbo.sub_checkProcesses @processDbName = @setDbName
+			,@tempTableId = @definedTempTableId;
 
 		/*
 		**	This sub sp resets either the "THK" or "ZZS" user code password to "basel1ne" (without quotes) if the database version is 7.3 or higher.  If the database version
@@ -299,9 +320,11 @@ BEGIN TRY
 	BEGIN
 
 		IF @cleanOverride is not null
-			EXEC dbo.sub_setBankDefs @icsDbName = @setDbName, @retainBankDefInfo = 0;
+			EXEC dbo.sub_setBankDefs @icsDbName = @setDbName
+				,@retainBankDefInfo = 0;
 		ELSE
-			EXEC dbo.sub_setBankDefs @icsDbName = @setDbName, @retainBankDefInfo = 1;
+			EXEC dbo.sub_setBankDefs @icsDbName = @setDbName
+				,@retainBankDefInfo = 1;
 	END;
 
 	/*
@@ -331,14 +354,34 @@ BEGIN TRY
 		IF @cleanOverride = 'clean' --The user wanted to specifically clean the database of PCI sensitive data
 		BEGIN
 
-			EXEC dbo.sub_cleanDatabase @cleanDbName = @setDbName, @thkVersion = @thkVersion, @tempTableId = @definedTempTableId; --Calling the "sub_cleanDatabase" sp before backing up the restored database.  Passing @setDbName, @thkVersion, and @definedTempTableId values to the sub sp.
-			EXEC dbo.sub_backupDatabase @backupDbName = @setDbName, @backupType = 'full', @method = 'litespeed', @client = @setClient, @user = @userOverride, @backupThkVersion = @thkVersionOUT, @backupDbType = @setDbType, @cleanStatus = 'clean', @probNbr = @setProbNbr, @backupRetention = @daysToLive;
+			EXEC dbo.sub_cleanDatabase @cleanDbName = @setDbName --Calling the "sub_cleanDatabase" sp before backing up the restored database.  Passing @setDbName, @thkVersion, and @definedTempTableId values to the sub sp.
+				,@thkVersion = @thkVersion
+				,@tempTableId = @definedTempTableId;
+			EXEC dbo.sub_backupDatabase @backupDbName = @setDbName
+				,@backupType = 'full'
+				,@method = 'litespeed'
+				,@client = @setClient
+				,@user = @userOverride
+				,@backupThkVersion = @thkVersionOUT
+				,@backupDbType = @setDbType
+				,@cleanStatus = 'clean'
+				,@probNbr = @setProbNbr
+				,@backupRetention = @daysToLive;
 		END
 		ELSE IF @cleanOverride = 'dirty' --The user wanted to specifically NOT clean the database of PCI sensitive data
 		BEGIN
 
 			SET @daysToLive = 60 --Because the database contains PCI sensitive data we do not want to store the backup of the database any longer than 60 days
-			EXEC dbo.sub_backupDatabase @backupDbName = @setDbName, @backupType = 'full', @method = 'litespeed', @client = @setClient, @user = @userOverride, @backupThkVersion = @thkVersionOUT, @backupDbType = @setDbType, @cleanStatus = 'dirty', @probNbr = @setProbNbr, @backupRetention = @daysToLive;
+			EXEC dbo.sub_backupDatabase @backupDbName = @setDbName
+				,@backupType = 'full'
+				,@method = 'litespeed'
+				,@client = @setClient
+				,@user = @userOverride
+				,@backupThkVersion = @thkVersionOUT
+				,@backupDbType = @setDbType
+				,@cleanStatus = 'dirty'
+				,@probNbr = @setProbNbr
+				,@backupRetention = @daysToLive;
 		END
 	END;
 
@@ -354,7 +397,17 @@ BEGIN TRY
 			SET @userOverride = (SELECT user_name FROM user_mappings WHERE domain_name = SYSTEM_USER); --Pull the actual user who called the sp regardless of what the @userOverride parameter was set to.  This is used for recording purposes only
 		REVERT;
 	
-		EXEC sub_auditTrail @auditDbName = @setDbName, @operationFile = @setBackupFile, @operationType = 0, @auditCleanStatus = @cleanOverride, @auditUserName = @userOverride, @auditThkVersion = @thkVersionOUT, @auditProbNbr = @setProbNbr, @auditClient = @setClient, @auditRetention = @daysToLive, @operationStart = @restoreStartTime, @operationStop = @restoreEndTime; --Calling the "sub_auditDbName" sp.  Passing many values to it from current parameters (to lazy to list them out)!
+		EXEC sub_auditTrail @auditDbName = @setDbName --Calling the "sub_auditDbName" sp.  Passing many values to it from current parameters (to lazy to list them out)!
+			,@operationFile = @setBackupFile
+			,@operationType = 0
+			,@auditCleanStatus = @cleanOverride
+			,@auditUserName = @userOverride
+			,@auditThkVersion = @thkVersionOUT
+			,@auditProbNbr = @setProbNbr
+			,@auditClient = @setClient
+			,@auditRetention = @daysToLive
+			,@operationStart = @restoreStartTime
+			,@operationStop = @restoreEndTime;
 	END;
 
 	SET @printMessage = char(13) + char(10) + 'Congratulations!!! The restore has completed successfully'

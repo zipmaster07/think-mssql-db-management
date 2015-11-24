@@ -40,9 +40,11 @@ DECLARE @thkVersion			nvarchar(32)			--The THINK Enterprise version that the dat
 		,@result			int						--Stores the result of running the xp_restore_headeronly litespeed extended sp.
 		,@sql				nvarchar(4000)
 		,@printMessage		nvarchar(4000)
-		,@errorMsg			nvarchar(4000)
+		,@errorMessage		nvarchar(4000)
 		,@errorSeverity		int
-		,@errorNumber		int;
+		,@errorNumber		int
+		,@errorProcedure	nvarchar(128)
+		,@errorLine			int;
 
 BEGIN TRY
 	
@@ -136,13 +138,29 @@ BEGIN TRY
 					IF (RIGHT(@litespeedFilePath, 1) <> '\')
 						SET @litespeedFilePath = @litespeedFilePath + '\';
 
-					SET 
-					BEGIN CATCH
-					END CATCH;@accessMediaSet = @litespeedFilePath + @accessMediaSet; --The path and name of the litespeed backup.
+					SET @accessMediaSet = @litespeedFilePath + @accessMediaSet; --The path and name of the litespeed backup.
 
 					BEGIN TRY
 						EXEC @result = master.dbo.xp_restore_headeronly @filename = @accessMediaSet;
 					END TRY
+					BEGIN CATCH
+						
+						SELECT @errorMessage = ERROR_MESSAGE()
+								,@errorSeverity = ERROR_SEVERITY()
+								,@errorNumber = ERROR_NUMBER()
+								,@errorProcedure = COALESCE('dbo.usp_THKBackupDb', ERROR_PROCEDURE(), NULL)
+								,@errorLine = ERROR_LINE();
+
+						SET @printMessage = N'Error encountered while processing' + char(13) + char(10) +
+											N'------------------------------------------------------------------------------------------------------' + char(13) + char(10) +
+											N'Error Number			Error Severity			Error Procedure				Error Line #' + char(13) + char(10) +
+											N'------------------------------------------------------------------------------------------------------' + char(13) + char(10) +
+											CONVERT(nvarchar(8), @errorNumber) + '					' + CONVERT(nvarchar(8), @errorSeverity) + '						' + ISNULL(CONVERT(nvarchar(32), @errorProcedure), 'NULL') + '		' + CONVERT(nvarchar(8), @errorLine) + char(13) + char(10) + char(13) + char(10) + char(13) + char(10) +
+											N'Error Message:		' + @errorMessage + char(13) + char(10) +
+											N'------------------------------------------------------------------------------------------------------'
+
+						RAISERROR(@printMessage, @errorSeverity, 1);
+					END CATCH;
 
 					IF @result <> 0 AND @createNewMediaFamily in (NULL, 'n')
 						RAISERROR('Unable to restore litespeed file header', 16, 1) WITH LOG;
@@ -248,11 +266,11 @@ BEGIN CATCH
 	IF @@TRANCOUNT > 0
 		ROLLBACK
 
-	SELECT @errorMsg = ERROR_MESSAGE()
+	SELECT @errorMessage = ERROR_MESSAGE()
 		,@errorSeverity = ERROR_SEVERITY()
 		,@errorNumber = ERROR_NUMBER();
 
-	RAISERROR(@errorMsg, @errorSeverity, 1);
+	RAISERROR(@errorMessage, @errorSeverity, 1);
 	RETURN -1;
 END CATCH
 GO
