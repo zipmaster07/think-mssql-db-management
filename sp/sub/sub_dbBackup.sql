@@ -20,7 +20,7 @@ GO
 
 CREATE PROCEDURE [dbo].[sub_backupDatabase](
 	@backupDbName		nvarchar(128)			--Required:	The name of the database that is going to be backed up.
-	,@backupPath		nvarchar(1024)			--Optional:	The path where the backup file will be kept, this does not include the filename.  Pulled from the meta database. If not specified by the calling usp then the default location is used.
+	,@backupPath		nvarchar(1024) = null	--Optional:	The path where the backup file will be kept, this does not include the filename.  Pulled from the meta database. If not specified by the calling usp then the default location is used.
 	,@backupType		nvarchar(4)				--Required:	The backup type to take (full, differential, transaction log).
 	,@method			varchar(16)				--Required:	The driver to use to backup the database (native MSSQL or Litespeed).
 	,@client			nvarchar(128)			--Required:	The client that this backup belongs to.  Although @client is required it can be set to NULL.

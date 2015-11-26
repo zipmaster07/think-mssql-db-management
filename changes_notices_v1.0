@@ -1,0 +1,16 @@
+Change notices for DB Management v1.0:
+
+Enhancements:
+-	Added the change password sub sp to the db restore usp.
+-	If latent mdb/ndb/ldf files exists, delete them if possible. If not possible use differnet file names and inform user.
+-	Added the check processes sub sp to the db restore usp.
+-	Properly commented all sp's.
+-	Vastely improved the database principals sub sp when checking, viewing, and removing data.
+-	Added the think subscription xaction_key to the CyberSource Secure SOAP bank definition. Forced to change ics_value column size to 1024.
+
+Bugs:
+-	Fixed bugs in sub restore db to bring a database back online.
+-	Fixed bugs in sub bank defs to execute all @sql variables.
+-	Single file .mdf backups would attempt to restore to multi-.mdf databases incorrectly.
+-	Checking email/event queue didn't account for versions prior to 7.1.
+-	Stopping email/event queue day end processes failed in TE version 7.1.8.
