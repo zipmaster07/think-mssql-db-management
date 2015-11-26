@@ -25,7 +25,7 @@ CREATE PROCEDURE [dbo].[usp_THKBackupDB](
 	,@setProbNbr			nvarchar(16) = null			--Optional:		Used to associate a specific problem number to a backup.
 	,@setBackupRetention	int = null					--Optional:		How long the backup will/should be kept before being deleted.
 	,@accessMediaSet		nvarchar(128) = null		--Optional:		If specified the system will look for a backup with the media set specified. If one is found then it will use the existing media set.
-	,@createNewMediaFamily	char(1) = null				--Optional:		This parameter is only used when the user specifies an existing media set, but wants to create a new media family: 0 - Do not create new media family, 1 - create new media family.
+	,@createNewMediaFamily	char(1) = 'n'				--Optional:		This parameter is only used when the user specifies an existing media set, but wants to create a new media family: 0 - Do not create new media family, 1 - create new media family.
 	,@userOverride			nvarchar(32) = null			--Undocumented:	Used to set the user of who the backup is associated with, otherwise the user calling the sp is used.
 	,@cleanStatusOverride	char(5) = 'clean'			--Undocumented:	Indicates if the database is clean or dirty.  the sp assumes the database is clean unless otherwise explicity set to dirty.
 ) WITH EXECUTE AS OWNER
