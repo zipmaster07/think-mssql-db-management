@@ -40,6 +40,10 @@ The following parameters can be passed to the cli tool:
     -U, --user_rights   Sets how users should be kept/restored to the original and restored database.
     
 The module classes consist of:
+
+    -   Automate
+    -   Backup
+    -   Restore
 """
 
 __author__  = "Joshua Schaeffer"
@@ -48,8 +52,7 @@ __version__ = '1.0'
 
 import argparse
 import sqlalchemy
-
-ENGINE_STRING = "mssql+pyodbc://guest:password@localhost/tempdb"
+import userexceptions
 
 '''Common arguments for the automation program. The arguments are used in both the backup and restore subcommands.'''
 parent_parser = argparse.ArgumentParser(prog="automate.py", prefix_chars="-/"
@@ -94,36 +97,82 @@ restore_parser.add_argument("-U", "--user_rights", type=int, default=1
     ,help="Sets how users should be kept/restored to the original and restored database.")
 
 args = parent_parser.parse_args()
+#engine = sqlalchemy.create_engine(ENGINE_STRING)
 
-if args.password is None:
-    args.password = ""
-if args.username is None:
-    args.username = ""
-if args.client is None:
-    args.client = args.database
-if args.media_set is None:
-    args.media_set = "NULL"
+class _ArgPreset(object):
+    """A helper class that sets values to avoid concatenation and conversion errors.
+    """
+    def _check_attributes(self):
+        if args.client is None:
+            args.client = args.database
+        if args.media_set is None:
+            args.media_set = "NULL"
 
-ENGINE_STRING = "mssql+pyodbc://%s:%s@%s:%d/%s?driver=SQL+Server+Native+Client+10.0" % (args.username, args.password, args.server, args.port, args.database)
-engine = sqlalchemy.create_engine(ENGINE_STRING)
+class Automate(_ArgPreset):
+    """This is the main class of the module. It builds the connection string used to connect to the database and can execute a stored procedure.
+    """
+    def __init__(self):
+        self.server = args.server
+        self.port = args.port
+        self.username = args.username
+        self.password = args.password
+        self.client = args.client
+        
+    _check_attributes()
+        
+    def connection_string(self, engine):
+        """Builds the connection string that the SQLAlchemy engine will use. MSSQL has a number of DBAPI options including:
+            PyODBC (the perferred connection method and the one used here)
+            mxODBC
+            pymssql
+            zxJDBC for Jython
+            adodbapi
+            
+        The function can be enhanced by simply adding additional DBAPI options and their corresponding engine string values.
+        
+        EXAMPLES:
+            MSSQL:  "mssql+pyodbc://user:password@localhost/tempdb?driver=SQL+Server"
+            
+        Returns the engine_string variable.
+        """
+        self.engine = engine
 
-connection = engine.raw_connection()
-try:
-    cursor = connection.cursor()
-    cursor.callproc("dbo.usp_THKBackupDb", [args.database, args.client, args.path, args.backup_type, args.method, args.database_type, args.retention, args.media_set, args.new_media])
-    results = list(cursor.fetchall())
-    cursor.close()
-    connection.commit()
-finally:
-    connection.close
-
-class Automate(object):
-    pass
+        if engine == 'pyodbc':
+            self.engine_string = "mssql+pyodbc://%s:%s@%s:%d/%s?driver=SQL+Server" % (self.username, self.password, self.server, self.port, self.database)
+            
+        return self.engine_string
+    
+    def create_parameters(self):
+        params = []
+        
+        
+        
+    def exec_procedure(self, session, proc_name, params):
+        """Runs an MSSQL stored procedure. Takes the following parameters:
+        
+            session     -   The instance of the session that the stored procedure should be run under.
+            proc_name   -   The name of the stored procedure to run.
+            params      -   A dictionary of parameters that will be used by the stored procedure.
+            
+        Returns the return value of the stored procedure.
+        """
+        self.sql_params = ",".join(["@{0}={1}".format(name, value) for name, value in params.items()])
+        self.sql_string = """
+            DECLARE @return_value int;
+            EXEC    @return_value = [dbo].[{proc_name}] {params};
+            SELECT 'Return Value' = @return_value;
+        """.format(proc_name=proc_name, params=sql_params)
+        
+        return session.execute(sql_string).fetchall()
 
 class Backup(Automate):
+    """Ensures that all backup parameters are provided and valid then runs the dbo.usp_THKBackupDb stored procedure.
+    """
     pass
 
 class Restore(Automate):
+    """Ensures that all the restore parameters are provided and valid then runs the dbo.usp_THKRestoreDb stored procedure.
+    """
     pass
 
 if __name__ == "__main__":
