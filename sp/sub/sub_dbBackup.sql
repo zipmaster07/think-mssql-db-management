@@ -54,6 +54,7 @@ DECLARE @fileext			nvarchar(16)	--The file extension that the backup should have
 		,@mediaSetId		int = null		--msdb.dbo.backupmediafamily.media_set_id.
 		,@physicalDevice	nvarchar(512)	--If the media set is provided then we do not need to find the backup path and construct the backup file name. This stores the existing backup file name (and path) from the media set.
 		,@backupName		nvarchar(128)	--Backup set name. This determined dynamically. Uses the database name, type, and date
+		,@mssqlVersion		nvarchar(8)		--The version of MSSQL that the final baseline backup is being taken on. This is the represented as the MSSQL version year (i.e. MSSQL 2008, 2012, 2014, 2016, etc).
 		,@stmt				nvarchar(4000)
 		,@printMessage		nvarchar(4000)
 		,@errorMessage		varchar(max)
@@ -106,29 +107,16 @@ BEGIN
 	RAISERROR(@printMessage, 10, 1) WITH NOWAIT;
 
 	IF (@backupPath is null OR @backupPath = 'default') --Pull the backup directory from the meta database.
-	BEGIN
-
 		SET @backupPath = (SELECT p_value FROM dbo.params WHERE p_key = 'DefaultBackupDirectory');
-
-		IF @backupPath is null
-			RAISERROR('The @backupPath parameter has not been specified and the DefaultBackupDirectory parameter has not been found in dbAdmin.dbo.params.', 16, 1) WITH LOG;
-	END;
 	ELSE IF (@backupPath = 'customer first')
-	BEGIN
-
 		SET @backupPath = (SELECT p_value FROM dbo.params WHERE p_key = 'CustomerFirstBackupDirectory');
-
-		IF @backupPath is null
-			RAISERROR('The @backupPath parameter has not been specified and the CustomerFirstBackupDirectory parameter has not been found in dbAdmin.dbo.params.', 16, 1) WITH LOG;
-	END;
 	ELSE IF (@backupPath = 'db changes')
-	BEGIN
-
 		SET @backupPath = (SELECT p_value FROM dbo.params WHERE p_key = 'DBChangesBackupDirectory');
+	ELSE IF (@backupPath = 'baseline')
+		SET @backupPath = (SELECT p_value FROM dbo.params WHERE p_key = 'BaselineBackupDirectory');
 
-		IF @backupPath is null
-			RAISERROR('The @backupPath parameter has not been specified and the DBChangesBackupDirectory parameter has not been found in dbAdmin.dbo.params.', 16, 1) WITH LOG;
-	END;
+	IF @backupPath is null
+		RAISERROR('The @backupPath parameter has not been specified and the DefaultBackupDirectory parameter has not been found in dbAdmin.dbo.params.', 16, 1) WITH LOG;
 
 	SET @printMessage = '	Using backup path at: ' + @backupPath;
 	RAISERROR(@printMessage, 10, 1) WITH NOWAIT;
@@ -241,10 +229,38 @@ BEGIN
 			IF @physicalDevice is null
 			BEGIN
 
-				IF @backupThkVersion is not null --The database being backed up is a THINK Enterprise database. Include the version number for convenience
-					SET @filepath = @backupPath + LOWER(@client) + '_' + LOWER(@user) + '_' + @datestamp + '_' + @timestamp + '_' + @backupThkVersion + '_' + UPPER(@backupDbType) + '_' + LOWER(@cleanStatus) + '_' + @probNbr + @countMessage + @fileext;
-				ELSE --The database being backed up is not a THINK Enterprise database.
-					SET @filepath = @backupPath + LOWER(@client) + '_' + LOWER(@user) + '_' + @datestamp + '_' + @timestamp + '_' + UPPER(@backupDbType) + '_' + @backupType + @countMessage + @fileext;
+				/*
+				**	When backing up a baseline a special filename should be created. No date/time information, user, client, clean status, or problem
+				**	number should be used when creating the filename. A baseline database backup should not be created using an existing media set, so
+				**	this statement should always run for baselines.
+				*/
+				IF @backupLocation = 'baseline'
+				BEGIN
+
+					SET @mssqlVersion =
+						CASE 
+							WHEN CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(16)) like '9.%'
+								THEN 'sql05_'
+							WHEN CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(16)) like '10.%'
+								THEN 'sql08_'
+							WHEN CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(16)) like '11.%'
+								THEN 'sql12_'
+							WHEN CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(16)) like '12.%'
+								THEN 'sql14_'
+							WHEN CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(16)) like '13.%'
+								THEN 'sql16_'
+						ELSE 'sql'
+					END;
+					SET @filepath = @backupPath + 'baseline_' + @mssqlVersion + REPLACE(@backupThkVersion, '.', '') + @fileext;
+				END;
+				ELSE
+				BEGIN
+
+					IF @backupThkVersion is not null --The database being backed up is a THINK Enterprise database. Include the version number for convenience
+						SET @filepath = @backupPath + LOWER(@client) + '_' + LOWER(@user) + '_' + @datestamp + '_' + @timestamp + '_' + @backupThkVersion + '_' + UPPER(@backupDbType) + '_' + LOWER(@cleanStatus) + '_' + @probNbr + @countMessage + @fileext;
+					ELSE --The database being backed up is not a THINK Enterprise database.
+						SET @filepath = @backupPath + LOWER(@client) + '_' + LOWER(@user) + '_' + @datestamp + '_' + @timestamp + '_' + UPPER(@backupDbType) + '_' + @backupType + @countMessage + @fileext;
+				END;
 			END
 			ELSE
 				SET @filepath = @physicalDevice

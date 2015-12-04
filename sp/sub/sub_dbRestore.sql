@@ -44,6 +44,7 @@ DECLARE @physicalDataFile		sysname			--The physical data file that the logical d
 		,@eof					int				--The Length of the backup file string.
 		,@tempFilename			nvarchar(2000)	--Used to find individual files in multi-file backups.
 		,@semiColonPos			int				--Finds where semi-colons are located in multi-file backups.
+		,@compatibilityLevel	nvarchar(32)	--Sets the proper compatibility level of the created database based on which MSSQL version the database was created.
 		,@sql					nvarchar(4000)
 		,@sqlOUT				nvarchar(max)
 		,@printMessage			nvarchar(4000)
@@ -553,8 +554,23 @@ BEGIN TRY
 	IF @recovery = 'n'
 		RETURN;
 
-	SET @sql = N'ALTER DATABASE ' + QUOTENAME(@restoreDbName) + N'SET COMPATIBILITY_LEVEL = 100' --Set the compatibility level of the restored database to MSSQL 2008.
-	EXEC (@sql);
+	SET @compatibilityLevel =
+		CASE 
+			WHEN CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(16)) like '9.%'
+				THEN N'SET COMPATIBILITY_LEVEL = 90'
+			WHEN CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(16)) like '10.%'
+				THEN N'SET COMPATIBILITY_LEVEL = 100'
+			WHEN CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(16)) like '11.%'
+				THEN N'SET COMPATIBILITY_LEVEL = 110'
+			WHEN CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(16)) like '12.%'
+				THEN N'SET COMPATIBILITY_LEVEL = 120'
+			WHEN CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(16)) like '13.%'
+				THEN N'SET COMPATIBILITY_LEVEL = 130'
+		ELSE N'SET COMPATIBILITY_LEVEL = 100' --If unable to determine the MSSQL version then set the compatibility to MSSQL 2008.
+	END;
+
+	SET @sql = N'ALTER DATABASE ' + QUOTENAME(@restoreDbName) + @compatibilityLevel --Set the compatibility level of the restored database to MSSQL 2008.
+	EXEC sp_executesql @sql;
 
 	SET @printMessage =  char(13) + char(10) + 'Hold your horses... Just because the restore completed, doesn''t mean we''re done yet...' + char(13) + char(10) + char(13) + char(10);
 	RAISERROR(@printMessage, 10 ,1) WITH NOWAIT;

@@ -23,6 +23,8 @@ DECLARE @defaultDataDirectory	nvarchar(500)	--The directory on the database serv
 		,@count					int = 0			--Counter for any arbitrary number of operations.
 		,@dataFilename			nvarchar(128)	--The name of the actual data file for the new database.
 		,@logFilename			nvarchar(128)	--The name of the actual log file for the new database.
+		,@severity				int				--Stores the severity of redirected error messages. Helps to determine if processing should continue or be aborted.
+		,@compatibilityLevel	nvarchar(32)	--Sets the proper compatibility level of the created database based on which MSSQL version the database was created.
 		,@sql					nvarchar(4000)
 		,@printMessage			nvarchar(4000)
 		,@errorMessage			nvarchar(4000)
@@ -66,56 +68,51 @@ BEGIN TRY
 	*/
 	WHILE @createDatabase = 1
 	BEGIN
+		
+		SET @sql = N'CREATE DATABASE ' + QUOTENAME(@newDbName) + N' ON  PRIMARY' + char(13) + char(10) +
+					N'(NAME = N' + QUOTENAME(@newDbName, '''') + N',FILENAME = N''' + @defaultDataDirectory + @dataFilename + N''',SIZE = 3072KB,FILEGROWTH = 1024KB)
+					LOG ON 
+					(NAME = N''' + @newDbName + N'_log'',FILENAME = N''' + @defaultLogDirectory + @logFilename + N''',SIZE = 1024KB,FILEGROWTH = 10%)'
 		BEGIN TRY
-
-			SET @count = @count + 1;
-			SET @sql = N'CREATE DATABASE ' + QUOTENAME(@newDbName) + N' ON  PRIMARY' + char(13) + char(10) +
-						N'(NAME = N' + QUOTENAME(@newDbName, '''') + N',FILENAME = N''' + @defaultDataDirectory + @dataFilename + N''',SIZE = 3072KB,FILEGROWTH = 1024KB)
-						LOG ON 
-						(NAME = N''' + @newDbName + N'_log'',FILENAME = N''' + @defaultLogDirectory + @logFilename + N''',SIZE = 1024KB,FILEGROWTH = 10%)'
 			EXEC sp_executesql @sql;
 			SET @createDatabase = 0; --End the loop after successfully running the CREATE DATABASE statement.
 		END TRY
 		BEGIN CATCH
-
-			IF @@TRANCOUNT > 0
-				ROLLBACK;
-
-			SELECT @errorMessage = ERROR_MESSAGE()
-					,@errorSeverity = ERROR_SEVERITY()
-					,@errorNumber = ERROR_NUMBER()
-					,@errorProcedure = COALESCE('dbo.sub_createDatabase', ERROR_PROCEDURE(), NULL)
-					,@errorLine = ERROR_LINE();
-
-			SET @printMessage = N'Error encountered while processing' + char(13) + char(10) +
-						N'------------------------------------------------------------------------------------------------------' + char(13) + char(10) +
-						N'Error Number			Error Severity			Error Procedure				Error Line #' + char(13) + char(10) +
-						N'------------------------------------------------------------------------------------------------------' + char(13) + char(10) +
-						CONVERT(nvarchar(8), @errorNumber) + '					' + CONVERT(nvarchar(8), @errorSeverity) + '						' + ISNULL(CONVERT(nvarchar(32), @errorProcedure), 'NULL') + '		' + CONVERT(nvarchar(8), @errorLine) + char(13) + char(10) + char(13) + char(10) + char(13) + char(10) +
-						N'Error Message:		' + @errorMessage + char(13) + char(10) +
-						N'------------------------------------------------------------------------------------------------------'
-
-			IF @count > 10 --After 10 failed attempts to create the database just give up.
-				RAISERROR(@errorMessage, @errorSeverity, 1);
-
-			IF @errorNumber = 1802 --Database could not be created because the same filename already exists on the database server.
-			BEGIN
-
-				SET @printMessage = '	Filename: "' + @dataFilename + '" and/or "' + @logFilename + '" already exists for the ' + @newDbName + ' database, alerting filename structure';
-				RAISERROR(@printMessage, 10, 1) WITH NOWAIT;
-				SET @dataFilename = @newDbName + CAST(@count AS nvarchar(2)); --Change the name of the data file by appending a number to it.
-				SET @logFilename = @newDbName + CAST(@count AS nvarchar(2)); --Change the name of the log file by appending a number to it.
-			END
-			ELSE
-				RAISERROR(@errorMessage, @errorSeverity, 1);
+			EXEC dbo.sub_formatErrorMsg @formatSpName = 'dbo.sub_createDatabase'
+				,@errorSeverity = @severity OUTPUT
+				,@formatDebug = @createDebug
+				,@stringData0 = @dataFilename
+				,@stringData1 = @logFilename
+				,@stringData2 = @newDbName
+				,@intData0 = @count;
+			IF @severity >= 16
+				RETURN -1			
 		END CATCH;
+		SET @count = @count + 1;
+		SET @dataFilename = @newDbName + CAST(@count AS nvarchar(2)); --Change the name of the data file by appending a number to it.
+		SET @logFilename = @newDbName + CAST(@count AS nvarchar(2)); --Change the name of the log file by appending a number to it.
 	END;
 
 	/*
 	**	Once the database has been created then several ALTER DATABASE statements are run to set defaults on the new database.  What each database option does is specified
-	**	below in further comments.
+	**	below in further comments. The database compatibility is determined dynamically based on which server/instance the database is being created.
 	*/
-	SET @sql = N'ALTER DATABASE ' + QUOTENAME(@newDbName) + N'SET COMPATIBILITY_LEVEL = 100' + char(13) + char(10) +			--Compatibility Level set to SQL 2008.
+	SET @compatibilityLevel =
+		CASE 
+			WHEN CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(16)) like '9.%'
+				THEN N'SET COMPATIBILITY_LEVEL = 90'
+			WHEN CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(16)) like '10.%'
+				THEN N'SET COMPATIBILITY_LEVEL = 100'
+			WHEN CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(16)) like '11.%'
+				THEN N'SET COMPATIBILITY_LEVEL = 110'
+			WHEN CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(16)) like '12.%'
+				THEN N'SET COMPATIBILITY_LEVEL = 120'
+			WHEN CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(16)) like '13.%'
+				THEN N'SET COMPATIBILITY_LEVEL = 130'
+		ELSE N'SET COMPATIBILITY_LEVEL = 100' --If unable to determine the MSSQL version then set the compatibility to MSSQL 2008.
+	END;
+
+	SET @sql = N'ALTER DATABASE ' + QUOTENAME(@newDbName) + @compatibilityLevel + char(13) + char(10) +							--Compatibility Level.
 				N'ALTER DATABASE ' + QUOTENAME(@newDbName) + N'SET ANSI_NULL_DEFAULT OFF ' + char(13) + char(10) +				--New columns are not explicitly nullable without specifying.
 				N'ALTER DATABASE ' + QUOTENAME(@newDbName) + N'SET ANSI_NULLS OFF' + char(13) + char(10) +						--Equals (=) and not equals (<>) comparions evaluate to TRUE against NULL values.
 				N'ALTER DATABASE ' + QUOTENAME(@newDbName) + N'SET ANSI_PADDING OFF' + char(13) + char(10) +					--For varchar & varbinary, trailing blanks/zeros are trimmed.  Char & binary follow same rules are varchar & varbinary.
