@@ -87,6 +87,9 @@ BEGIN TRY
 		IF @cleanOverride not in (NULL,'clean','dirty')
 			RAISERROR('Value for parameter @cleanOverride must either not be set or be set to "clean" or "dirty".', 16, 1) WITH LOG;
 
+		IF @setDebug not in ('y', 'n')
+			RAISERROR('Value for parameter @setDebug must be "y" or "n".', 16, 1) WITH LOG;
+
 		IF @setUserRights != 1 --Just a warning, most users do not want this set 99% of the time.
 			RAISERROR('Value for parameter @setUserRights was changed from the default of 1.  Make sure you wanted to do this!', 10, 1) WITH NOWAIT;
 
@@ -158,7 +161,7 @@ BEGIN TRY
 		BEGIN
 			
 			SET @setDebug = 'n';
-			RAISERROR('Only members of the sysadmin and securityadmin fixed server roles may view debug statements.  No debug statements will be printed', 10, 1) WITH NOWAIT;
+			RAISERROR(90502, -1, -1) WITH NOWAIT;
 		END
 		
 		/*
@@ -454,12 +457,10 @@ SET @sql =
 		WHEN @@SERVICENAME = 'QA' --If running under the QA instance add the listed MPLS account.
 			THEN N'GRANT EXECUTE ON [dbo].[usp_THKRestoreDB] TO [MPLS\rwalgren]'
 		WHEN @@SERVICENAME = 'DEV' --If running under the DEV instance add the listed MPLS accounts.
-			THEN N'GRANT EXECUTE ON [dbo].[usp_THKRestoreDB] TO [MPLS\akennedy]
-					GRANT EXECUTE ON [dbo].[usp_THKRestoreDB] TO [MPLS\mheil]
+			THEN N'GRANT EXECUTE ON [dbo].[usp_THKRestoreDB] TO [MPLS\mheil]
 					GRANT EXECUTE ON [dbo].[usp_THKRestoreDB] TO [MPLS\shokanson]'
 		WHEN @@SERVICENAME = 'SQL11' --If running under the SQL11 instance add the listed MPLS accounts.
-			THEN N'GRANT EXECUTE ON [dbo].[usp_THKRestoreDB] TO [MPLS\akennedy]
-					GRANT EXECUTE ON [dbo].[usp_THKRestoreDB] TO [MPLS\cjenkins]
+			THEN N'GRANT EXECUTE ON [dbo].[usp_THKRestoreDB] TO [MPLS\cjenkins]
 					GRANT EXECUTE ON [dbo].[usp_THKRestoreDB] TO [MPLS\jschaeffer]
 					GRANT EXECUTE ON [dbo].[usp_THKRestoreDB] TO [MPLS\lzibetti]
 					GRANT EXECUTE ON [dbo].[usp_THKRestoreDB] TO [MPLS\mheil]
